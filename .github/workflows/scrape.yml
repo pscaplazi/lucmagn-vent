@@ -1,0 +1,70 @@
+name: Scrape wind data
+
+on:
+  schedule:
+    # Every 6 hours. The station page carries a rolling 24h window, so this
+    # has ~18h of slack: GitHub's cron is best-effort and can run late or skip
+    # a slot entirely under load, and we still lose nothing.
+    - cron: "17 */6 * * *"
+  workflow_dispatch:      # lets you trigger a catch-up run by hand
+  push:
+    paths:
+      - .github/workflows/scrape.yml
+      - scrape.py
+
+permissions:
+  contents: write         # needed to commit the scraped data back
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false   # let a running scrape finish rather than losing it
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+        # No dependencies to install - scrape.py is stdlib-only, which keeps
+        # this job fast and immune to upstream package breakage.
+
+      - name: Scrape
+        run: python3 scrape.py --verbose
+
+      - name: Commit
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          # Nothing new is the normal outcome between station updates, so treat
+          # an empty diff as success rather than failing the run.
+          if git diff --staged --quiet; then
+            echo "no new readings"
+            exit 0
+          fi
+          git commit -m "data: readings through $(python3 scrape.py --latest)"
+          # A concurrent run (or a manual push) may have landed first; rebase
+          # onto it and retry rather than clobbering with --force.
+          for attempt in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "push rejected, rebasing (attempt $attempt)"
+            git pull --rebase --autostash
+          done
+          echo "could not push after 3 attempts" >&2
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### Archive'
+            echo '```'
+            python3 scrape.py --stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
