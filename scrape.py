@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -99,7 +100,7 @@ def fetch(url: str = URL, attempts: int = 4) -> dict[str, dict[str, str]]:
                 break
             log.warning("attempt %d/%d failed (%s); retrying in %ds",
                         attempt, attempts, exc, delay)
-            __import__("time").sleep(delay)
+            time.sleep(delay)
             delay *= 2
     raise last  # type: ignore[misc]
 
@@ -267,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)sZ %(levelname)-7s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    logging.Formatter.converter = __import__("time").gmtime
+    logging.Formatter.converter = time.gmtime
 
     if args.stats:
         show_stats()

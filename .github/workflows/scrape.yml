@@ -54,7 +54,7 @@ jobs:
           for attempt in 1 2 3; do
             if git push; then exit 0; fi
             echo "push rejected, rebasing (attempt $attempt)"
-            git pull --rebase --autostash
+            git pull --rebase --autostash || true
           done
           echo "could not push after 3 attempts" >&2
           exit 1
