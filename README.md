@@ -38,10 +38,10 @@ and the first run seeds a whole day of history immediately.
 You can also trigger a catch-up run by hand from the Actions tab
 (**Run workflow**), which is the fix if the archive ever falls behind.
 
-> **Note:** GitHub disables scheduled workflows in public repos after 60 days
-> with no commits. This one commits data regularly, so it stays alive on its
-> own — but if the station goes offline for two months, re-enable it in the
-> Actions tab.
+GitHub disables scheduled workflows in public repos after 60 days with no
+commits. Normally the data commits keep it alive; during a long station outage
+(the winter shutdown) the workflow pushes an empty `keepalive` commit once the
+last commit is 45 days old, so it resumes on its own when the station does.
 
 ## Local use
 
@@ -58,9 +58,14 @@ is idempotent — an unchanged fetch produces no diff.
 
 ## Being a good citizen
 
-The site throttles: under load it responds `200` with the page chrome but **no
-chart data**, rather than a `429`. `scrape.py` treats an empty parse as a
-transient condition and retries with backoff rather than failing or hammering.
+The page proxies an upstream API (`api.neceel-data.ch`) through one shared
+login with a quota of **3 calls per 5 minutes across all visitors**. When it is
+spent, the page is a one-line `429 ... quota exceeded` error instead of charts.
+`scrape.py` recognises that and retries once after the window resets.
+
+When the station is offline (e.g. the winter shutdown) the charts are present
+but every value is null. That is treated as "nothing new" and the run succeeds,
+so a seasonal outage doesn't produce a failed run every 6 hours.
 
 Four requests a day is negligible load. If you fork this, please don't tighten
 the schedule — a 10-minute cron would gain you nothing (the data only updates

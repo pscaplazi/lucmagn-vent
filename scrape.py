@@ -63,6 +63,20 @@ class ParseError(RuntimeError):
     """The page loaded but didn't contain the data we expect."""
 
 
+class QuotaExceeded(RuntimeError):
+    """The site's upstream API refused us: shared quota of 3 calls per 5 min."""
+
+
+class StationOffline(RuntimeError):
+    """Charts present but every value is null - e.g. the winter shutdown."""
+
+
+# The page proxies api.neceel-data.ch with one shared login, quota 3 calls/5 min
+# across *all* visitors. When it's spent the page is a one-line error instead.
+QUOTA_RE = re.compile(r"quota exceeded|status 429", re.I)
+QUOTA_WAIT = 330  # just past the 5-minute window
+
+
 def parse_gdate(value: str) -> dt.datetime:
     """Google Charts Date(y, m, d, H, M, S) -> datetime. Month is 0-indexed."""
     m = GDATE_RE.match(value.strip())
@@ -81,33 +95,31 @@ def fetch_once(url: str = URL, timeout: int = 30) -> str:
         return resp.read().decode(charset, "replace")
 
 
-def fetch(url: str = URL, attempts: int = 4) -> dict[str, dict[str, str]]:
+def fetch(url: str = URL, attempts: int = 2) -> dict[str, dict[str, str]]:
     """Fetch and parse, retrying on the failure modes this site actually has.
 
-    Under load the server answers 200 with the page chrome but no chart data
-    rather than a 5xx, so an empty parse is a transient condition to retry -
-    not a layout change. Backoff is generous because the throttle takes a
-    while to clear, and we have a 24h window of slack to spend.
+    A spent quota (see QUOTA_RE) clears after 5 minutes, so wait that out once.
+    StationOffline is not retried: an all-null window won't fill in minutes.
     """
-    delay = 20
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
             return parse(fetch_once(url))
-        except (ParseError, urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+        except (QuotaExceeded, urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
             last = exc
             if attempt == attempts:
                 break
             log.warning("attempt %d/%d failed (%s); retrying in %ds",
-                        attempt, attempts, exc, delay)
-            time.sleep(delay)
-            delay *= 2
+                        attempt, attempts, exc, QUOTA_WAIT)
+            time.sleep(QUOTA_WAIT)
     raise last  # type: ignore[misc]
 
 
 def parse(html: str) -> dict[str, dict[str, str]]:
     """Extract all three series, keyed by ISO timestamp string."""
     tables = DATATABLE_RE.findall(html)
+    if not tables and QUOTA_RE.search(html):
+        raise QuotaExceeded(html.strip()[:200])
     if not tables:
         raise ParseError("no DataTable literals found - page layout changed?")
 
@@ -150,6 +162,8 @@ def parse(html: str) -> dict[str, dict[str, str]]:
     missing = set(METRICS.values()) - seen
     if missing:
         log.warning("series missing from page: %s", ", ".join(sorted(missing)))
+    if not rows and seen:
+        raise StationOffline("station reports no values for the last 24h")
     if not rows:
         raise ParseError("DataTables present but no usable rows")
     return rows
@@ -281,7 +295,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         rows = fetch()
-    except ParseError as exc:
+    except StationOffline as exc:
+        # Expected every winter; not worth a failed run and an email.
+        log.info("%s - nothing to archive", exc)
+        return 0
+    except (ParseError, QuotaExceeded) as exc:
         log.error("%s", exc)
         return 1
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:

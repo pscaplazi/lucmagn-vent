@@ -46,9 +46,19 @@ jobs:
           # an empty diff as success rather than failing the run.
           if git diff --staged --quiet; then
             echo "no new readings"
-            exit 0
+            # GitHub disables scheduled workflows in public repos after 60 days
+            # without commits. During a long outage (the winter shutdown) push
+            # an empty keepalive commit so the schedule is still running when
+            # the station comes back.
+            age_days=$(( ($(date +%s) - $(git log -1 --format=%ct)) / 86400 ))
+            if [ "$age_days" -lt 45 ]; then
+              exit 0
+            fi
+            echo "last commit ${age_days} days ago, pushing keepalive"
+            git commit --allow-empty -m "keepalive: no new readings for ${age_days} days"
+          else
+            git commit -m "data: readings through $(python3 scrape.py --latest)"
           fi
-          git commit -m "data: readings through $(python3 scrape.py --latest)"
           # A concurrent run (or a manual push) may have landed first; rebase
           # onto it and retry rather than clobbering with --force.
           for attempt in 1 2 3; do
